@@ -1,25 +1,38 @@
-# Stage 1: Build
+# ── Stage 1: Build ──────────────────────────────────────────────
 FROM maven:3.9.5-eclipse-temurin-17 AS build
 WORKDIR /app
 
-# Copy parent pom first
-COPY ../pom.xml ./pom.xml
+# Copy pom first for dependency caching
+COPY pom.xml .
+RUN mvn dependency:go-offline -B
 
-# Copy service pom
-COPY pom.xml ./product-service/pom.xml
+# Copy source and build
+COPY src ./src
+RUN mvn clean package -DskipTests -B
 
-# Copy source
-COPY src ./product-service/src
-
-# Build the service
-WORKDIR /app/product-service
-RUN mvn clean package -DskipTests
-
-# Stage 2: Runtime
+# ── Stage 2: Runtime ─────────────────────────────────────────────
 FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
-COPY --from=build /app/product-service/target/app.jar app.jar
+
+# Security: create non-root user
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+# Copy built jar
+COPY --from=build /app/target/*.jar app.jar
+
+# Change ownership
+RUN chown appuser:appgroup app.jar
+
 USER appuser
+
 EXPOSE 8081
-ENTRYPOINT ["java", "-jar", "app.jar"]
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+  CMD wget -q --spider http://localhost:8081/actuator/health || exit 1
+
+ENTRYPOINT ["java", \
+  "-XX:+UseContainerSupport", \
+  "-XX:MaxRAMPercentage=75.0", \
+  "-XX:+ExitOnOutOfMemoryError", \
+  "-Djava.security.egd=file:/dev/./urandom", \
+  "-jar", "app.jar"]
